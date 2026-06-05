@@ -7,6 +7,10 @@ const NAME = 'vanitum-test-node';
 
 app.use(express.json());
 
+app.get('/', (_req, res) => {
+  res.json({ service: NAME, status: 'ok', routes: ['/health', '/env', '/call/:slug', '/chain/:slug1/:slug2'] });
+});
+
 /* Health check — used by other services when they call this one */
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: NAME, timestamp: new Date().toISOString() });
