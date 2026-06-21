@@ -48,6 +48,8 @@ app.get('/', (_req, res) => {
       '/env',
       '/mysql/health',
       '/mysql/notes',
+      '/mysql/notes/:id',
+      '/mysql/notes/seed',
       '/call/:slug',
       '/chain/:slug1/:slug2'
     ]
@@ -111,6 +113,7 @@ async function ensureSchema() {
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
         message VARCHAR(500) NOT NULL,
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (id)
       )
     `).catch((error) => {
@@ -120,7 +123,44 @@ async function ensureSchema() {
     log('info', 'mysql_schema_initializing', { table: 'notes' });
   }
   await schemaReady;
+  await ensureUpdatedAtColumn();
   log('info', 'mysql_schema_ready', { table: 'notes' });
+}
+
+async function ensureUpdatedAtColumn() {
+  const [columns] = await getPool().query(
+    "SHOW COLUMNS FROM notes LIKE 'updated_at'"
+  );
+  if (columns.length === 0) {
+    await getPool().execute(`
+      ALTER TABLE notes
+      ADD COLUMN updated_at TIMESTAMP NOT NULL
+      DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    `);
+    log('info', 'mysql_schema_migrated', { table: 'notes', column: 'updated_at' });
+  }
+}
+
+function parseNoteId(value) {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function readMessage(body) {
+  return typeof body?.message === 'string' ? body.message.trim() : '';
+}
+
+function validateMessage(message) {
+  return message.length > 0 && message.length <= 500;
+}
+
+async function findNote(id) {
+  const [rows] = await getPool().execute(
+    `SELECT id, message, created_at AS createdAt, updated_at AS updatedAt
+     FROM notes WHERE id = ?`,
+    [id]
+  );
+  return rows[0] || null;
 }
 
 function databaseError(res, error) {
@@ -156,7 +196,8 @@ app.get('/mysql/notes', async (_req, res) => {
   try {
     await ensureSchema();
     const [notes] = await getPool().query(
-      'SELECT id, message, created_at AS createdAt FROM notes ORDER BY id DESC LIMIT 100'
+      `SELECT id, message, created_at AS createdAt, updated_at AS updatedAt
+       FROM notes ORDER BY id DESC LIMIT 100`
     );
     log('info', 'mysql_notes_read', { count: notes.length });
     res.json({ ok: true, notes });
@@ -166,8 +207,8 @@ app.get('/mysql/notes', async (_req, res) => {
 });
 
 app.post('/mysql/notes', async (req, res) => {
-  const message = typeof req.body.message === 'string' ? req.body.message.trim() : '';
-  if (!message || message.length > 500) {
+  const message = readMessage(req.body);
+  if (!validateMessage(message)) {
     return res.status(400).json({
       ok: false,
       error: 'Message is required and must not exceed 500 characters.'
@@ -180,12 +221,109 @@ app.post('/mysql/notes', async (req, res) => {
       'INSERT INTO notes (message) VALUES (?)',
       [message]
     );
-    const [rows] = await getPool().execute(
-      'SELECT id, message, created_at AS createdAt FROM notes WHERE id = ?',
-      [result.insertId]
-    );
+    const note = await findNote(result.insertId);
     log('info', 'mysql_note_created', { noteId: result.insertId });
-    res.status(201).json({ ok: true, note: rows[0] });
+    res.status(201).json({ ok: true, note });
+  } catch (error) {
+    databaseError(res, error);
+  }
+});
+
+app.post('/mysql/notes/seed', async (_req, res) => {
+  try {
+    await ensureSchema();
+    const [countRows] = await getPool().query('SELECT COUNT(*) AS count FROM notes');
+    if (Number(countRows[0].count) > 0) {
+      log('info', 'mysql_seed_skipped', { reason: 'notes_not_empty' });
+      return res.json({
+        ok: true,
+        inserted: 0,
+        message: 'Seed skipped because notes already contain data.'
+      });
+    }
+
+    const sampleMessages = [
+      'Vanitum MySQL connection verified',
+      'Runtime logs are visible',
+      'CRUD operations are ready'
+    ];
+    await getPool().query(
+      'INSERT INTO notes (message) VALUES ?',
+      [sampleMessages.map((message) => [message])]
+    );
+    log('info', 'mysql_notes_seeded', { count: sampleMessages.length });
+    res.status(201).json({ ok: true, inserted: sampleMessages.length });
+  } catch (error) {
+    databaseError(res, error);
+  }
+});
+
+app.get('/mysql/notes/:id', async (req, res) => {
+  const id = parseNoteId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ ok: false, error: 'A valid note ID is required.' });
+  }
+
+  try {
+    await ensureSchema();
+    const note = await findNote(id);
+    if (!note) {
+      return res.status(404).json({ ok: false, error: 'Note not found.' });
+    }
+    log('info', 'mysql_note_read', { noteId: id });
+    res.json({ ok: true, note });
+  } catch (error) {
+    databaseError(res, error);
+  }
+});
+
+app.put('/mysql/notes/:id', async (req, res) => {
+  const id = parseNoteId(req.params.id);
+  const message = readMessage(req.body);
+  if (!id) {
+    return res.status(400).json({ ok: false, error: 'A valid note ID is required.' });
+  }
+  if (!validateMessage(message)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Message is required and must not exceed 500 characters.'
+    });
+  }
+
+  try {
+    await ensureSchema();
+    const [result] = await getPool().execute(
+      'UPDATE notes SET message = ? WHERE id = ?',
+      [message, id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ ok: false, error: 'Note not found.' });
+    }
+    const note = await findNote(id);
+    log('info', 'mysql_note_updated', { noteId: id });
+    res.json({ ok: true, note });
+  } catch (error) {
+    databaseError(res, error);
+  }
+});
+
+app.delete('/mysql/notes/:id', async (req, res) => {
+  const id = parseNoteId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ ok: false, error: 'A valid note ID is required.' });
+  }
+
+  try {
+    await ensureSchema();
+    const [result] = await getPool().execute(
+      'DELETE FROM notes WHERE id = ?',
+      [id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ ok: false, error: 'Note not found.' });
+    }
+    log('info', 'mysql_note_deleted', { noteId: id });
+    res.json({ ok: true, deletedId: id });
   } catch (error) {
     databaseError(res, error);
   }
