@@ -10,7 +10,34 @@ const DATABASE_URL = process.env.DATABASE_URL || process.env.MYSQL_URL;
 let pool;
 let schemaReady;
 
+function log(level, event, details = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    service: NAME,
+    event,
+    ...details
+  };
+  const output = JSON.stringify(entry);
+  if (level === 'error') console.error(output);
+  else if (level === 'warn') console.warn(output);
+  else console.log(output);
+}
+
 app.use(express.json());
+app.use((req, res, next) => {
+  const startedAt = process.hrtime.bigint();
+  res.on('finish', () => {
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    log(res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info', 'http_request', {
+      method: req.method,
+      path: req.originalUrl.split('?')[0],
+      status: res.statusCode,
+      durationMs: Number(durationMs.toFixed(2))
+    });
+  });
+  next();
+});
 
 app.get('/', (_req, res) => {
   res.json({
@@ -68,6 +95,12 @@ function getPool() {
     enableKeepAlive: true,
     keepAliveInitialDelay: 0
   });
+  log('info', 'mysql_pool_created', {
+    host: databaseUrl.hostname,
+    port: Number(databaseUrl.port || 3306),
+    database: decodeURIComponent(databaseUrl.pathname.replace(/^\//, '')),
+    connectionLimit: 5
+  });
   return pool;
 }
 
@@ -84,12 +117,18 @@ async function ensureSchema() {
       schemaReady = undefined;
       throw error;
     });
+    log('info', 'mysql_schema_initializing', { table: 'notes' });
   }
   await schemaReady;
+  log('info', 'mysql_schema_ready', { table: 'notes' });
 }
 
 function databaseError(res, error) {
-  console.error('MySQL operation failed:', error.message);
+  log('error', 'mysql_operation_failed', {
+    code: error.code || 'UNKNOWN',
+    errno: error.errno || null,
+    sqlState: error.sqlState || null
+  });
   res.status(503).json({
     ok: false,
     error: 'The database is temporarily unavailable. Check the application database configuration.'
@@ -101,6 +140,7 @@ app.get('/mysql/health', async (_req, res) => {
     const [rows] = await getPool().query(
       'SELECT DATABASE() AS databaseName, CURRENT_TIMESTAMP AS serverTime'
     );
+    log('info', 'mysql_health_ok', { database: rows[0].databaseName });
     res.json({
       ok: true,
       engine: 'mysql',
@@ -118,6 +158,7 @@ app.get('/mysql/notes', async (_req, res) => {
     const [notes] = await getPool().query(
       'SELECT id, message, created_at AS createdAt FROM notes ORDER BY id DESC LIMIT 100'
     );
+    log('info', 'mysql_notes_read', { count: notes.length });
     res.json({ ok: true, notes });
   } catch (error) {
     databaseError(res, error);
@@ -143,6 +184,7 @@ app.post('/mysql/notes', async (req, res) => {
       'SELECT id, message, created_at AS createdAt FROM notes WHERE id = ?',
       [result.insertId]
     );
+    log('info', 'mysql_note_created', { noteId: result.insertId });
     res.status(201).json({ ok: true, note: rows[0] });
   } catch (error) {
     databaseError(res, error);
@@ -183,16 +225,22 @@ app.get('/chain/:slug1/:slug2', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`${NAME} listening on :${PORT}`);
+const server = app.listen(PORT, () => {
   const links = Object.keys(process.env).filter(k => k.endsWith('_INTERNAL_URL'));
-  if (links.length) console.log('Linked services:', links.join(', '));
-  console.log(`MySQL configured: ${Boolean(DATABASE_URL)}`);
+  log('info', 'service_started', {
+    port: Number(PORT),
+    mysqlConfigured: Boolean(DATABASE_URL),
+    linkedServiceCount: links.length
+  });
 });
 
 async function shutdown() {
-  if (pool) await pool.end();
-  process.exit(0);
+  log('info', 'service_stopping');
+  server.close(async () => {
+    if (pool) await pool.end();
+    log('info', 'service_stopped');
+    process.exit(0);
+  });
 }
 
 process.on('SIGTERM', shutdown);

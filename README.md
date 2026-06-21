@@ -22,6 +22,20 @@ The application listens on `PORT`, defaulting to `3000`.
 - `GET /mysql/notes`: create the test table when needed and list notes
 - `POST /mysql/notes`: insert a note with JSON such as `{"message":"Hello"}`
 
+## Runtime logs
+
+The application writes structured JSON logs to stdout/stderr for:
+
+- service startup and shutdown
+- each HTTP request with status and duration
+- MySQL pool and schema initialization
+- database health checks
+- note reads and writes
+- database failures
+
+Credentials, connection URLs, request bodies, and note contents are not logged.
+Open the application's logs in Vanitum and select the **Runtime** tab.
+
 Example:
 
 ```bash
