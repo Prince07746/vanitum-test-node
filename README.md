@@ -21,7 +21,7 @@ The application listens on `PORT`, defaulting to `3000`.
 - `GET /mysql/health`: verify the MySQL connection
 - `GET /mysql/notes`: create the test table when needed and list notes
 - `POST /mysql/notes`: insert a note with JSON such as `{"message":"Hello"}`
-- `POST /mysql/notes/seed`: insert three sample rows when the table is empty
+- `GET or POST /mysql/notes/seed`: insert three sample rows when the table is empty
 - `GET /mysql/notes/:id`: read one note
 - `PUT /mysql/notes/:id`: update one note
 - `DELETE /mysql/notes/:id`: delete one note
@@ -48,7 +48,7 @@ curl -X POST https://YOUR-APP.vanitum.com/mysql/notes \
   -H "Content-Type: application/json" \
   -d '{"message":"MySQL is connected"}'
 curl https://YOUR-APP.vanitum.com/mysql/notes
-curl -X POST https://YOUR-APP.vanitum.com/mysql/notes/seed
+curl https://YOUR-APP.vanitum.com/mysql/notes/seed
 curl https://YOUR-APP.vanitum.com/mysql/notes/1
 curl -X PUT https://YOUR-APP.vanitum.com/mysql/notes/1 \
   -H "Content-Type: application/json" \

@@ -229,7 +229,7 @@ app.post('/mysql/notes', async (req, res) => {
   }
 });
 
-app.post('/mysql/notes/seed', async (_req, res) => {
+async function seedNotes(_req, res) {
   try {
     await ensureSchema();
     const [countRows] = await getPool().query('SELECT COUNT(*) AS count FROM notes');
@@ -256,7 +256,12 @@ app.post('/mysql/notes/seed', async (_req, res) => {
   } catch (error) {
     databaseError(res, error);
   }
-});
+}
+
+// This is a dedicated test application, so GET is also supported to make the
+// idempotent seed operation easy to run directly from a browser.
+app.get('/mysql/notes/seed', seedNotes);
+app.post('/mysql/notes/seed', seedNotes);
 
 app.get('/mysql/notes/:id', async (req, res) => {
   const id = parseNoteId(req.params.id);
